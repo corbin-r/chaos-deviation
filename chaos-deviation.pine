@@ -1,0 +1,219 @@
+//@version=6
+indicator("Chaos Deviation", overlay=true, max_labels_count=500)
+
+// Inputs
+len        = input.int(20, "Length", minval=4, group="Settings")
+maxSigma   = input.int(3, "Sigma Levels", minval=1, maxval=6, group="Settings")
+src        = input.source(close, "Source", group="Settings")
+bandScale   = input.float(15.0, "Band Width Scale", minval=1.0, maxval=50.0, step=1.0, group="Settings", tooltip="Multiplier for sigma band width; increase if bands are too tight")
+showLabels  = input.bool(true, "Show Labels", group="Settings")
+showHotZone = input.bool(true, "Show Volume Hot-Zone Fills", group="Volume")
+volLen      = input.int(20, "Volume Lookback", minval=1, group="Volume", tooltip="Bars for volume average")
+hotColor    = input.color(#FF6B35, "Hot Zone Color", group="Volume")
+coolColor   = input.color(#004E89, "Cool Zone Color", group="Volume")
+posColor    = input.color(#089981, "Upper Sigma", group="Colors")
+negColor    = input.color(#F23645, "Lower Sigma", group="Colors")
+
+// --- Sevcik's Fractal Dimension (noise measure) - computed but NOT plotted ---
+fractal_sevcik(_src, _len) =>
+    y_min = ta.lowest(_src, _len)
+    y_max = ta.highest(_src, _len)
+    y_scale = y_max != y_min ? (y_max - y_min) : 1.0
+    float L = 0.0
+    for i = 1 to _len - 1
+        y1 = (_src[i - 1] - y_min) / y_scale
+        y2 = (_src[i]     - y_min) / y_scale
+        x1 = (i - 1) / (_len - 1)
+        x2 = (i    ) / (_len - 1)
+        L += math.sqrt(math.pow(x2 - x1, 2) + math.pow(y2 - y1, 2))
+    D = 1.0 + (math.log(L) / math.log(2 * (_len - 1)))
+    D
+
+// Compute noise (Sevcik FD), then mean and standard deviation
+noise     = fractal_sevcik(src, len)
+noise_ma  = ta.sma(noise, len)
+noise_dev = ta.stdev(noise, len)
+
+// Center bands on price: use SMA of source as center; scale sigma by ATR for price-appropriate width
+center    = ta.sma(src, len)
+sigma_atr = ta.atr(len) * bandScale  // Convert noise_dev units to price via ATR
+width_1s  = noise_dev * sigma_atr   // 1 sigma in price terms
+
+// A) Compute volume: normalized 0–1 (hot = high volume)
+vol_ma    = ta.sma(volume, volLen)
+vol_ratio = volume / math.max(vol_ma, 1e-10)
+vol_norm  = math.min(vol_ratio / 2.0, 1.0)  // Cap at 1.0 when ratio >= 2
+
+// B) Volume-based gradient color for hot-zones (hotter = higher volume)
+zoneColor = showHotZone ? color.from_gradient(vol_norm, 0, 1, color.new(coolColor, 85), color.new(hotColor, 40)) : color.new(color.gray, 100)
+
+// Plot standard deviation bands (assign to variables for fill)
+p_mean = plot(center, "Mean", color=color.gray, linewidth=1)
+p_1u   = plot(maxSigma >= 1 ? center + width_1s   : na, "+1σ", color=posColor, linewidth=1)
+p_1d   = plot(maxSigma >= 1 ? center - width_1s   : na, "-1σ", color=negColor, linewidth=1)
+p_2u   = plot(maxSigma >= 2 ? center + 2*width_1s : na, "+2σ", color=posColor, linewidth=1)
+p_2d   = plot(maxSigma >= 2 ? center - 2*width_1s : na, "-2σ", color=negColor, linewidth=1)
+p_3u   = plot(maxSigma >= 3 ? center + 3*width_1s : na, "+3σ", color=posColor, linewidth=1)
+p_3d   = plot(maxSigma >= 3 ? center - 3*width_1s : na, "-3σ", color=negColor, linewidth=1)
+p_4u   = plot(maxSigma >= 4 ? center + 4*width_1s : na, "+4σ", color=posColor, linewidth=1)
+p_4d   = plot(maxSigma >= 4 ? center - 4*width_1s : na, "-4σ", color=negColor, linewidth=1)
+p_5u   = plot(maxSigma >= 5 ? center + 5*width_1s : na, "+5σ", color=posColor, linewidth=1)
+p_5d   = plot(maxSigma >= 5 ? center - 5*width_1s : na, "-5σ", color=negColor, linewidth=1)
+p_6u   = plot(maxSigma >= 6 ? center + 6*width_1s : na, "+6σ", color=posColor, linewidth=1)
+p_6d   = plot(maxSigma >= 6 ? center - 6*width_1s : na, "-6σ", color=negColor, linewidth=1)
+
+// Gradient fill hot-zones between sigma bands (fill must be at global scope)
+fill(p_mean, p_1u, zoneColor)
+fill(p_mean, p_1d, zoneColor)
+fill(p_1u, p_2u, zoneColor)
+fill(p_1d, p_2d, zoneColor)
+fill(p_2u, p_3u, zoneColor)
+fill(p_2d, p_3d, zoneColor)
+fill(p_3u, p_4u, zoneColor)
+fill(p_3d, p_4d, zoneColor)
+fill(p_4u, p_5u, zoneColor)
+fill(p_4d, p_5d, zoneColor)
+fill(p_5u, p_6u, zoneColor)
+fill(p_5d, p_6d, zoneColor)
+
+// Labels at end of each band
+var label lMean = na
+var label l1u = na
+var label l1d = na
+var label l2u = na
+var label l2d = na
+var label l3u = na
+var label l3d = na
+var label l4u = na
+var label l4d = na
+var label l5u = na
+var label l5d = na
+var label l6u = na
+var label l6d = na
+
+if not showLabels
+    if not na(lMean)
+        label.delete(lMean)
+        lMean := na
+    if not na(l1u)
+        label.delete(l1u)
+        label.delete(l1d)
+        l1u := na
+        l1d := na
+    if not na(l2u)
+        label.delete(l2u)
+        label.delete(l2d)
+        l2u := na
+        l2d := na
+    if not na(l3u)
+        label.delete(l3u)
+        label.delete(l3d)
+        l3u := na
+        l3d := na
+    if not na(l4u)
+        label.delete(l4u)
+        label.delete(l4d)
+        l4u := na
+        l4d := na
+    if not na(l5u)
+        label.delete(l5u)
+        label.delete(l5d)
+        l5u := na
+        l5d := na
+    if not na(l6u)
+        label.delete(l6u)
+        label.delete(l6d)
+        l6u := na
+        l6d := na
+else if barstate.islast
+    // Clean up labels for sigma levels no longer shown
+    if maxSigma < 6 and not na(l6u)
+        label.delete(l6u)
+        label.delete(l6d)
+        l6u := na
+        l6d := na
+    if maxSigma < 5 and not na(l5u)
+        label.delete(l5u)
+        label.delete(l5d)
+        l5u := na
+        l5d := na
+    if maxSigma < 4 and not na(l4u)
+        label.delete(l4u)
+        label.delete(l4d)
+        l4u := na
+        l4d := na
+    if maxSigma < 3 and not na(l3u)
+        label.delete(l3u)
+        label.delete(l3d)
+        l3u := na
+        l3d := na
+    if maxSigma < 2 and not na(l2u)
+        label.delete(l2u)
+        label.delete(l2d)
+        l2u := na
+        l2d := na
+    if maxSigma < 1 and not na(l1u)
+        label.delete(l1u)
+        label.delete(l1d)
+        l1u := na
+        l1d := na
+
+    // Mean
+    if na(lMean)
+        lMean := label.new(bar_index, center, "Mean", color=color.gray, textcolor=color.white, style=label.style_label_left, size=size.small)
+    else
+        label.set_xy(lMean, bar_index, center)
+
+    // ±1σ
+    if maxSigma >= 1
+        if na(l1u)
+            l1u := label.new(bar_index, center + width_1s, "+1σ", color=posColor, textcolor=color.white, style=label.style_label_left, size=size.small)
+            l1d := label.new(bar_index, center - width_1s, "-1σ", color=negColor, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            label.set_xy(l1u, bar_index, center + width_1s)
+            label.set_xy(l1d, bar_index, center - width_1s)
+
+    // ±2σ
+    if maxSigma >= 2
+        if na(l2u)
+            l2u := label.new(bar_index, center + 2*width_1s, "+2σ", color=posColor, textcolor=color.white, style=label.style_label_left, size=size.small)
+            l2d := label.new(bar_index, center - 2*width_1s, "-2σ", color=negColor, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            label.set_xy(l2u, bar_index, center + 2*width_1s)
+            label.set_xy(l2d, bar_index, center - 2*width_1s)
+
+    // ±3σ
+    if maxSigma >= 3
+        if na(l3u)
+            l3u := label.new(bar_index, center + 3*width_1s, "+3σ", color=posColor, textcolor=color.white, style=label.style_label_left, size=size.small)
+            l3d := label.new(bar_index, center - 3*width_1s, "-3σ", color=negColor, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            label.set_xy(l3u, bar_index, center + 3*width_1s)
+            label.set_xy(l3d, bar_index, center - 3*width_1s)
+
+    // ±4σ
+    if maxSigma >= 4
+        if na(l4u)
+            l4u := label.new(bar_index, center + 4*width_1s, "+4σ", color=posColor, textcolor=color.white, style=label.style_label_left, size=size.small)
+            l4d := label.new(bar_index, center - 4*width_1s, "-4σ", color=negColor, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            label.set_xy(l4u, bar_index, center + 4*width_1s)
+            label.set_xy(l4d, bar_index, center - 4*width_1s)
+
+    // ±5σ
+    if maxSigma >= 5
+        if na(l5u)
+            l5u := label.new(bar_index, center + 5*width_1s, "+5σ", color=posColor, textcolor=color.white, style=label.style_label_left, size=size.small)
+            l5d := label.new(bar_index, center - 5*width_1s, "-5σ", color=negColor, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            label.set_xy(l5u, bar_index, center + 5*width_1s)
+            label.set_xy(l5d, bar_index, center - 5*width_1s)
+
+    // ±6σ
+    if maxSigma >= 6
+        if na(l6u)
+            l6u := label.new(bar_index, center + 6*width_1s, "+6σ", color=posColor, textcolor=color.white, style=label.style_label_left, size=size.small)
+            l6d := label.new(bar_index, center - 6*width_1s, "-6σ", color=negColor, textcolor=color.white, style=label.style_label_left, size=size.small)
+        else
+            label.set_xy(l6u, bar_index, center + 6*width_1s)
+            label.set_xy(l6d, bar_index, center - 6*width_1s)
